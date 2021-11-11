@@ -1,0 +1,337 @@
+#define tINT 1    
+#define triggerPin 13
+#define echoPin0 12
+
+
+#define pingDelay 50      
+#define debugDelay 500   
+#define soundSpeed 343.0 
+volatile unsigned long travelTime[tINT];  
+volatile unsigned long startTime[tINT];   
+float distance[tINT];                     
+unsigned long lastPollMillis;
+unsigned long lastDebugMillis;
+
+
+//********************
+#include "painlessMesh.h"
+
+#include <Arduino_JSON.h>
+#include <FastLED.h>
+
+#define LED_PIN 33                           // pin for led 
+#define NUM_LEDS 81                         // number of leds
+
+// MESH Details
+#define   MESH_PREFIX     "RNTMESH" //name for your MESH
+#define   MESH_PASSWORD   "MESHpassword" //password for your MESH
+#define   MESH_PORT       5555 //default port
+CRGB leds[NUM_LEDS];                     // leds veriable 
+
+int led_arr[] = {0,0,0,0,0,0,0,0,0};
+int sens_arr[] = {0,0,0,0,0,0};       // space sensing sensor 
+int slot1=0;
+int slot2=0;            //   number of occupency in each slot 
+int turn_sens_arr[]={0,0,0};           // turnning sensing sensor
+int occupied;                       // total occupency number in the parking
+int ledflag=0;
+int previous_ledflag=-1;
+int vacant;
+int temp1 = 0;
+int j;                    // for leds loop riding 
+//Number for this node, 7575 for root
+int nodeNumber = 7575;
+
+//String to send to other nodes with sensor readings
+String readings;
+
+Scheduler userScheduler; // to control your personal task
+painlessMesh  mesh;
+
+// User stub
+void sendMessage() ; // Prototype so PlatformIO doesn't complain
+String getReadings(int code); // Prototype for sending sensor readings
+
+//Create tasks: to send messages and get readings;
+Task taskSendMessage(TASK_SECOND * 5 , TASK_FOREVER, &sendMessage);
+
+String getReadings (int code) {
+  JSONVar jsonReadings;
+  jsonReadings["node"] = nodeNumber;
+  //jsonReadings["code"] = code;
+  
+  if(code == 1)
+  {
+    jsonReadings["led1"] = led_arr[0];
+    jsonReadings["led2"] = led_arr[1];
+    jsonReadings["led3"] = led_arr[2];
+  }
+  else if(code == 2)
+  {
+    jsonReadings["led1"] = led_arr[3];
+    jsonReadings["led2"] = led_arr[4];
+    jsonReadings["led3"] = led_arr[5];
+  }
+  else if(code == 3)
+  {
+    jsonReadings["led1"] = led_arr[6];
+    jsonReadings["led2"] = led_arr[7];
+    jsonReadings["led3"] = led_arr[8];
+  }
+  
+  readings = JSON.stringify(jsonReadings);
+  return readings;
+}
+
+void sendMessage () {
+  // all calculations here.
+  int code = 1;
+  String msg = getReadings(code);
+  mesh.sendBroadcast(msg);
+}
+
+// Needed for painless library
+void receivedCallback( uint32_t from, String &msg ) {
+  Serial.printf("Received from %u msg=%s\n", from, msg.c_str());
+  JSONVar myObject = JSON.parse(msg.c_str());
+  int node = myObject["node"];
+  //int code = myObject["code"];
+  int s1 = myObject["s1"];
+  int s2 = myObject["s2"];
+  int s3 = myObject["s3"];
+
+  if(node == 1)
+  {
+    sens_arr[0] = s1;
+    sens_arr[1] = s2;
+   turn_sens_arr[0] = s3;
+  }
+  else if(node == 2)
+  {
+    sens_arr[2] = s1;
+    sens_arr[3] = s2;
+    turn_sens_arr[1] = s3;
+  }
+  else if(node == 3)
+  {
+    sens_arr[4] = s1;
+    sens_arr[5] = s2;
+    turn_sens_arr[2] = s3;
+  }
+}
+
+ledupdate();
+{
+  //
+}
+
+
+void newConnectionCallback(uint32_t nodeId) {
+  Serial.printf("New Connection, nodeId = %u\n", nodeId);
+}
+
+void changedConnectionCallback() {
+  Serial.printf("Changed connections\n");
+}
+
+void nodeTimeAdjustedCallback(int32_t offset) {
+  Serial.printf("Adjusted time %u. Offset = %d\n", mesh.getNodeTime(),offset);
+}
+
+void setup() {
+  
+  Serial.begin(115200);
+    pinMode(echoPin0, INPUT); 
+  attachInterrupt(echoPin0, call_INT0, CHANGE ); 
+
+  FastLED.addLeds<WS2812, LED_PIN, GRB>(leds, NUM_LEDS);                   //  led 
+  
+  //mesh.setDebugMsgTypes( ERROR | MESH_STATUS | CONNECTION | SYNC | COMMUNICATION | GENERAL | MSG_TYPES | REMOTE ); // all types on
+  mesh.setDebugMsgTypes( ERROR | STARTUP );  // set before init() so that you can see startup messages
+
+  mesh.init( MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT );
+  mesh.onReceive(&receivedCallback);
+  mesh.onNewConnection(&newConnectionCallback);
+  mesh.onChangedConnections(&changedConnectionCallback);
+  mesh.onNodeTimeAdjusted(&nodeTimeAdjustedCallback);
+
+  userScheduler.addTask(taskSendMessage);
+  taskSendMessage.enable();
+  
+}
+
+void loop() {
+   if (millis() - lastPollMillis >= pingDelay)
+  {
+    doMeasurement();
+    lastPollMillis = millis();
+  }
+
+  // it will run the user scheduler as well
+  mesh.update();
+  occupied=0;
+  
+  Distance1=distance[0] ;   //   outside gate sensor sensing entry
+                                                                                
+  for(int i=0;i<6;i++){                                                                      // loop for counting total occupied 
+    if(sens_arr[i]==1){
+      occupied=occupied+1;
+      }   
+  }
+  vacant=6-occupied;
+  for(i=0;i<2;i++){                                           // loop for counting total occupied in slot1
+                    if(sens_arr[i]==1){
+                                       slot1=slot1+1;
+                                      }
+                   }
+ for(i=2;i<6;i++){                                       // loop for counting total occupied in slot2
+                    if(sens_arr[i]==1){
+                                       slot2=slot2+1;
+                                      }
+                   }                  
+  
+  if((Distance1>=4)&&(Distance1<=20)){                        // number of entry counting condition using gate sensor
+    while(temp1 =  0){                  // condition to avoid multiple counting for same vehicle 
+      ledflag=ledflag+1;
+      temp1 = 1;  
+                    }
+                                    }
+                                    
+   if((Distance1<=4)&&(Distance1>=20)){                // reset for new entry counting at the gate
+                                      temp1=0;
+                                       }
+    
+   
+  
+  //if gate entry:
+  if(ledflag!=occupied){                                // 
+                      if(ledflag-previous_ledflag>=2){                 
+                                                     ledupdate_ON();
+                                                     }
+                        else{
+                             ledflag=occupied;
+                             previous_ledflag=occupied-1;
+                            }                               
+                       }      
+  if(ledflag==occupied){ 
+                        if(ledflag-previous_ledflag>1){
+                                                       previous_ledflag=previous_ledflag+1;
+                                                       }
+                        ledupdate_OFF();
+                       }
+                       }                       // void loop end
+
+void ledupdate_ON(){
+
+ if(sens_arr[0]==0){
+                  for(j=0;j<=13;j++){ 
+                                     leds[j]=CRGB(0,100,0); 
+                                     FastLED.show();          
+                                    }
+                  for(j=18;j<=26;j++){ 
+                                      leds[j]=CRGB(0,100,0);  
+                                     FastLED.show();          
+                                    }                  
+                                   
+                  }
+ if(sens_arr[1]==0){
+                  for(j=0;j<=17;j++){ 
+                                      leds[j]=CRGB(0,100,0); 
+                                     FastLED.show();          
+                                    }                
+                                   
+                  }
+ if(slot1==1){                                        // if one vehicle already parked out of 2 in slot1 glow red led after sensing another vehicle at turning 
+             if(turn_sens_arr[0]==1){
+                                    for(j=0,j<=8;j++){
+                                                      leds[j]=CRGB(100,0,0);
+                                                      FastLED.show();
+                                                     }
+                                   }
+           }
+if(sens_arr[2]==0){
+                  for(j=27;j<=40;j++){ 
+                                      leds[j]=CRGB(0,100,0); 
+                                     FastLED.show();           
+                                    }
+                  for(j=45;j<=53;j++){ 
+                                      leds[j]=CRGB(0,100,0); 
+                                     FastLED.show();           
+                                    }                  
+                                   
+                  } 
+
+ if(sens_arr[3]==0){
+                  for(j=27;j<=44;j++){ 
+                                      leds[j]=CRGB(0,100,0); 
+                                     FastLED.show();           
+                                    }                
+                                   
+                  }
+if(sens_arr[4]==0){
+                  for(j=54;j<=68;j++){ 
+                                      leds[j]=CRGB(0,100,0); 
+                                     FastLED.show();          
+                                    }
+                  for(j=73;j<=81;j++){ 
+                                      leds[j]=CRGB(0,100,0); 
+                                     FastLED.show();           
+                                    }                  
+                                   
+                  }          
+
+if(sens_arr[5]==0){
+                  for(j=54;j<=72;j++){ 
+                                      leds[j]=CRGB(0,100,0); 
+                                     FastLED.show();          
+                                    }                
+                                   
+                  }
+if(slot2==3){                                     // if 3 vehicle already parked out of 4 in slot2 glow red led after sensing another vehicle at turning
+             if(turn_sens_arr[1]==1){
+                                    for(j=27,j<=35;j++){
+                                                      leds[j]=CRGB(100,0,0);
+                                                      FastLED.show();
+                                                     }
+                                    for(j=54,j<=63;j++){
+                                                      leds[j]=CRGB(100,0,0);
+                                                      FastLED.show();
+                                                     }                 
+                                   }
+           }                  
+                                          
+}
+
+void ledupdate_OFF(){
+  for(j=0;j<=81;j++){
+    leds[j]=CRGB(0,0,0);
+    FastLED.show();
+  }
+}
+void call_INT0()
+{
+  byte pinRead;
+  pinRead = digitalRead(echoPin0); 
+  interruptHandler(pinRead, 0);
+}
+void interruptHandler(bool pinState, int nIRQ)
+{
+  unsigned long currentTime = micros();
+  if (pinState)
+    startTime[nIRQ] = currentTime;
+  else
+    travelTime[nIRQ] = currentTime - startTime[nIRQ];
+}
+void doMeasurement()
+{
+  noInterrupts();   // cli()
+  for (int i = 0; i < tINT; i++)
+    distance[i] = travelTime[i] / 2.0 * (float)soundSpeed / 10000.0;   // in cm
+  interrupts();   // sei();
+  digitalWrite(triggerPin, HIGH);    // HIGH pulse for at least 10µs
+  delayMicroseconds(10);
+  digitalWrite(triggerPin, LOW);     // Set LOW again
+}
+
+
+
